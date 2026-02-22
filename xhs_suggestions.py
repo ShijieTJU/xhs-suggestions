@@ -121,9 +121,29 @@ def wait_for_login(page):
     dismiss_overlay(page)  # 确保弹窗已关闭
 
 
+def ensure_on_home(page):
+    """确保页面处于小红书首页（搜索框可用），若已跳转则导航回来。"""
+    try:
+        search = page.locator("#search-input")
+        search.wait_for(state="visible", timeout=5000)
+        return  # 已在首页且搜索框可用
+    except Exception:
+        pass
+    # 搜索框不可用，导航回首页
+    print("     🔄 页面已跳转，导航回首页...")
+    page.goto(XHS_URL, wait_until="domcontentloaded")
+    page.wait_for_timeout(2000)
+    dismiss_overlay(page)
+    try:
+        page.wait_for_selector("#search-input", timeout=15_000)
+    except Exception:
+        pass
+
+
 def clear_search_box(page):
     """清空搜索框内容。"""
-    dismiss_overlay(page)  # 每次操作前确保无遮罩
+    ensure_on_home(page)    # 页面寂时自动回首页
+    dismiss_overlay(page)   # 确保无遮罩
     search_input = page.locator("#search-input")
     if not search_input.is_visible():
         search_input = page.locator('input[placeholder*="搜索"]')
@@ -294,28 +314,43 @@ def cmd_collect(args, keywords: list[str]):
                 sys.exit(1)
 
         # 依次采集关键词候选词
-        for idx, keyword in enumerate(keywords, 1):
-            print(f"\n[{idx}/{len(keywords)}]", end="")
-            suggestions = collect_suggestions(page, keyword)
-            results[keyword] = suggestions
+        try:
+            for idx, keyword in enumerate(keywords, 1):
+                print(f"\n[{idx}/{len(keywords)}]", end="")
+                try:
+                    suggestions = collect_suggestions(page, keyword)
+                except Exception as e:
+                    print(f"\n     ❌ 关键词「{keyword}」采集失败: {e}")
+                    print("     🔄 尝试回到首页后重试...")
+                    try:
+                        page.goto(XHS_URL, wait_until="domcontentloaded")
+                        page.wait_for_timeout(2000)
+                        dismiss_overlay(page)
+                        suggestions = collect_suggestions(page, keyword)
+                    except Exception as e2:
+                        print(f"     ❌ 重试失败，跳过该关键词: {e2}")
+                        suggestions = []
+                results[keyword] = suggestions
 
-            if idx < len(keywords):
-                time.sleep(BETWEEN_KEYWORDS_SLEEP)
+                if idx < len(keywords):
+                    time.sleep(BETWEEN_KEYWORDS_SLEEP)
+        finally:
+            # 无论是否中途崩溃，都保存已采集的结果
+            if results:
+                print("\n⚠️  保存已采集的部分结果...")
+                save_results(results, args.output)
 
-        # 保存结果
-        save_results(results, args.output)
-
-        # 汇总
-        print("\n" + "=" * 50)
-        print("  采集汇总")
-        print("=" * 50)
-        total_suggestions = 0
-        for kw, sugs in results.items():
-            count = len(sugs)
-            total_suggestions += count
-            print(f"  「{kw}」: {count} 个候选词")
-        print(f"\n  共采集 {len(keywords)} 个关键词，{total_suggestions} 个候选词")
-        print("=" * 50)
+                print("\n" + "=" * 50)
+                print("  采集汇总")
+                print("=" * 50)
+                total_suggestions = 0
+                for kw, sugs in results.items():
+                    count = len(sugs)
+                    total_suggestions += count
+                    print(f"  「{kw}」: {count} 个候选词")
+                collected = len(results)
+                print(f"\n  已采集 {collected}/{len(keywords)} 个关键词，{total_suggestions} 个候选词")
+                print("=" * 50)
 
         browser.close()
 
