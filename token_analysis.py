@@ -158,43 +158,51 @@ def extract_modifier_terms(items: list, preset: list) -> list:
 # 4. Prompt 矩阵生成
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def generate_prompts(
-    pain_tokens: list,
+def _prompts_for_pain(
+    pain: str,
+    quota: int,
     attr_tokens: list,
     modifier_tokens: list,
-    target: int = 100,
+    seen: set,
+    start_id: int,
 ) -> list[dict]:
-    """
-    按频次从高到低循环 [痛点]×[属性]×[修饰]×[模板] 组合，
-    去重后取前 target 条。
-    """
-    prompts = []
-    seen: set = set()
-
-    # 循环模板 + 三维组合
-    for template, (pain, attr, mod) in product(
-        TEMPLATES,
-        product(pain_tokens, attr_tokens, modifier_tokens),
-    ):
-        text = (
-            template
-            .replace("[P]", pain)
-            .replace("[A]", attr)
-            .replace("[M]", mod)
-        )
+    """为单个痛点词生成 quota 条不重复的 Prompt。"""
+    result = []
+    for template, attr, mod in product(TEMPLATES, attr_tokens, modifier_tokens):
+        text = template.replace("[P]", pain).replace("[A]", attr).replace("[M]", mod)
         if text not in seen:
             seen.add(text)
-            prompts.append({
-                "id": len(prompts) + 1,
+            result.append({
+                "id": start_id + len(result),
                 "痛点": pain,
                 "属性": attr,
                 "修饰": mod,
                 "prompt": text,
             })
-        if len(prompts) >= target:
+        if len(result) >= quota:
             break
+    return result
 
-    return prompts[:target]
+
+def generate_prompts_weighted(
+    pain_weights: list,
+    attr_tokens: list,
+    modifier_tokens: list,
+) -> list[dict]:
+    """
+    按指定配额生成加权 Prompt 矩阵。
+    pain_weights: [(pain_token, quota), ...]
+    """
+    prompts: list[dict] = []
+    seen: set = set()
+    for pain, quota in pain_weights:
+        batch = _prompts_for_pain(pain, quota, attr_tokens, modifier_tokens, seen, len(prompts) + 1)
+        prompts.extend(batch)
+        print(f"  [{pain}] 目标{quota}条 → 实际生成{len(batch)}条")
+    # 重新编号
+    for i, p in enumerate(prompts, 1):
+        p["id"] = i
+    return prompts
 
 
 def save_prompts(prompts: list, output_dir: str = "output") -> tuple[str, str]:
@@ -250,11 +258,27 @@ def main():
     print("【属性词（TOP-15）】:", "、".join(attr_terms[:15]))
     print("【修饰词（TOP-8）】 :", "、".join(modifier_terms[:8]))
 
-    # 取最高频的痛点词：前 10 个
-    selected_pain = top_pain[:10]
+    # ── Step 3: Prompt 矩阵（加权分配） ─────────────────────────────────
+    # 痛点配额分布：40% / 30% / 20% / 10%
+    pain_weights = [
+        # 40%
+        ("冻干复水",  40),
+        # 30%（三个各占 10%）
+        ("软便",      10),
+        ("黑下巴",     10),
+        ("便秘",      10),
+        # 20%（三个列1：7+7+6）
+        ("蓝粘毛",     7),
+        ("波立维",     7),
+        ("幼猫换粮",    6),
+        # 10%（三个列4+3+3）
+        ("补水",      4),
+        ("鸡胸肉",     3),
+        ("幼猫",      3),
+    ]
 
-    # ── Step 3: Prompt 矩阵 ─────────────────────────────────────────────────
-    prompts = generate_prompts(selected_pain, attr_terms, modifier_terms, target=100)
+    print("\n生成加权 Prompt 矩阵（共 100 条）...")
+    prompts = generate_prompts_weighted(pain_weights, attr_terms, modifier_terms)
 
     json_path, csv_path = save_prompts(prompts)
 
